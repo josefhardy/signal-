@@ -12,25 +12,29 @@ grounding step explicit and hard to accidentally skip:
 Current state (v0, see PROJECT_CONTEXT.md §7 for MVP scope):
   - extract_topics(): implemented, uses the LLM to pull structured
     topics/entities/quotes out of the transcript.
-  - retrieve_trend_data(): STUBBED. Returns an empty list for now.
-    This is the most important piece to replace before this product
-    is actually defensible — see the TODO below for concrete options.
-  - generate_seo_package(): implemented, but the "grounding" context
-    it passes to the LLM is currently topics-only until trend data
-    is wired up. Once retrieve_trend_data() does something real, no
-    other code needs to change — it's already threaded through.
+  - retrieve_trend_data(): implemented via pytrends (Google Trends,
+    free/unofficial). Degrades gracefully to [] on rate-limit/network
+    error. Upgrade path: swap for SerpApi/DataForSEO when reliability
+    or richer data (actual volume, PAA) becomes worth paying for.
+  - generate_seo_package(): fully wired — trend data now flows into
+    the generation prompt when available.
 
 Not in MVP yet (see PROJECT_CONTEXT.md §7):
   - This show's own historical performance data.
   - Niche benchmark data across similar shows.
 """
 
+import asyncio
 import json
+import logging
 from dataclasses import dataclass
 
 from openai import OpenAI
+from pytrends.request import TrendReq
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
 
@@ -87,30 +91,99 @@ Transcript:
     )
 
 
+def _fetch_trends_sync(topics: list[str]) -> list[dict]:
+    """
+    Synchronous pytrends fetch — runs in a thread via asyncio.to_thread()
+    so it doesn't block the event loop.
+
+    pytrends is an unofficial Google Trends client: free, no API key,
+    but rate-limited (429s under heavy load) and occasionally flaky.
+    We degrade gracefully — any exception returns [] so the rest of the
+    pipeline still runs with the "NOT YET AVAILABLE" notice in the prompt.
+
+    Upgrade path: when reliability or richer data (actual search volume,
+    People Also Ask) becomes worth paying for, swap the pytrends calls
+    here for a SerpApi / DataForSEO call and keep the return shape
+    identical. Nothing else in the pipeline needs to change.
+    """
+    results: list[dict] = []
+    pytrends = TrendReq(hl="en-US", tz=0, timeout=(10, 30))
+
+    # pytrends caps keyword batches at 5.
+    BATCH = 5
+    for i in range(0, len(topics), BATCH):
+        batch = topics[i : i + BATCH]
+        try:
+            pytrends.build_payload(batch, cat=0, timeframe="today 3-m", geo="")
+
+            # Interest over time: 0–100 scale Google uses internally.
+            iot = pytrends.interest_over_time()
+            # Related queries for each keyword — "rising" entries are the
+            # most useful signal ("queries that have increased significantly").
+            related = pytrends.related_queries()
+
+            for kw in batch:
+                # Average interest over the period as a proxy for "volume".
+                interest = 0
+                trend_dir = "stable"
+                if not iot.empty and kw in iot.columns:
+                    series = iot[kw]
+                    interest = int(series.mean())
+                    # Simple trend direction: compare last third vs first third.
+                    n = len(series)
+                    if n >= 6:
+                        early = series.iloc[: n // 3].mean()
+                        late = series.iloc[-n // 3 :].mean()
+                        if late > early * 1.2:
+                            trend_dir = "rising"
+                        elif late < early * 0.8:
+                            trend_dir = "falling"
+
+                # Rising related queries are the "what people actually search"
+                # signal. Take up to 5 per keyword, deduplicated.
+                rising_queries: list[str] = []
+                if kw in related and related[kw].get("rising") is not None:
+                    df_rising = related[kw]["rising"]
+                    if df_rising is not None and not df_rising.empty:
+                        rising_queries = df_rising["query"].head(5).tolist()
+
+                results.append(
+                    {
+                        "keyword": kw,
+                        "interest": interest,  # 0–100, Google Trends scale
+                        "trend": trend_dir,    # "rising" | "falling" | "stable"
+                        "related_questions": rising_queries,
+                    }
+                )
+        except Exception as exc:
+            # Rate-limited or network error — log and skip this batch rather
+            # than failing the whole pipeline.
+            logger.warning("pytrends fetch failed for batch %s: %s", batch, exc)
+
+    return results
+
+
 async def retrieve_trend_data(topics: list[str]) -> list[dict]:
     """
-    Retrieve current search/trend data for the given topics.
+    Retrieve current search/trend data for the given topics via Google Trends.
 
-    STUB — returns [] for now. This is the grounding step that makes
-    generated suggestions defensible ("what people are actually
-    searching") rather than just LLM guesswork, so it should be
-    prioritized before this product is shown to real users.
+    Returns a list of dicts:
+        [{"keyword": str, "interest": int, "trend": str, "related_questions": list[str]}]
 
-    Concrete options to implement this, roughly cheapest/fastest to
-    most robust:
-      1. Google Trends via an unofficial client (e.g. `pytrends`) —
-         free, no API key, but rate-limited and occasionally flaky.
-      2. A paid SERP/keyword API (SerpApi, DataForSEO, Ahrefs/SEMrush
-         APIs) — more reliable and richer data (search volume,
-         related questions), but costs money per query.
-      3. A lightweight "People Also Ask" / autocomplete scrape for the
-         topic — cheap signal, less robust than a real keyword API.
+    "interest" is Google Trends' 0–100 relative-interest score averaged over
+    the last 3 months. "trend" is "rising" | "falling" | "stable" based on
+    whether interest increased/decreased more than 20% from the first to the
+    last third of that window. "related_questions" are rising related queries
+    — the closest proxy we have (for free) to "what people are actually
+    searching" around this topic.
 
-    Whichever is chosen, keep the return shape as a list of dicts, e.g.
-    [{"keyword": "...", "volume": 1200, "trend": "rising"}], so
-    generate_seo_package() doesn't need to change.
+    Degrades gracefully to [] on any network or rate-limit error so the
+    pipeline continues with the "trend data not available" notice in the
+    generation prompt.
     """
-    return []
+    if not topics:
+        return []
+    return await asyncio.to_thread(_fetch_trends_sync, topics)
 
 
 async def generate_seo_package(transcript: str) -> SeoPackage:
