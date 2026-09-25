@@ -46,7 +46,7 @@ async def upload_episode(file: UploadFile = File(...)):
 
     try:
         transcription = await transcribe_audio(saved_path)
-        seo_package = await generate_seo_package(transcription.text)
+        seo_package, trend_data = await generate_seo_package(transcription.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
 
@@ -56,6 +56,8 @@ async def upload_episode(file: UploadFile = File(...)):
         "transcript": transcription.text,
         "segments": transcription.segments,
         "seo_package": asdict(seo_package),
+        "trend_data": trend_data,
+        "trend_grounding_used": len(trend_data) > 0,
     }
     storage.save_episode(episode_id, result)
 

@@ -234,9 +234,10 @@ tags: 5-8 relevant tags/categories.
     )
 
     data = json.loads(response.choices[0].message.content)
-    return SeoPackage(
+    seo_package = SeoPackage(
         title_options=data.get("title_options", []),
         meta_description=data.get("meta_description", ""),
         show_notes=data.get("show_notes", ""),
         tags=data.get("tags", []),
     )
+    return seo_package, trend_data
