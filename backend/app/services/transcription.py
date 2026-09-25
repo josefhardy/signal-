@@ -1,32 +1,63 @@
 """
 Transcription service.
 
-MVP plan: send the uploaded audio file to a managed transcription API
-(e.g. OpenAI's Whisper API) and return the full text transcript, plus
-timestamped segments if the provider supports them (useful later for
-show-notes chapter markers).
-
-Deliberately provider-agnostic at the function boundary so we can swap
-providers without touching callers.
+Uses OpenAI's Whisper API to turn an uploaded audio file into a full
+text transcript. Kept behind a small function boundary so the provider
+can be swapped later without touching callers.
 """
+
+from dataclasses import dataclass
+
+from openai import OpenAI
 
 from app.config import settings
 
+_client: OpenAI | None = None
 
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI(api_key=settings.openai_api_key)
+    return _client
+
+
+@dataclass
 class TranscriptionResult:
-    def __init__(self, text: str, segments: list[dict] | None = None):
-        self.text = text
-        self.segments = segments or []
+    text: str
+    # Whisper's verbose_json response includes per-segment timestamps,
+    # useful later for show-notes chapter markers. Kept as raw dicts
+    # for now rather than a typed model, since we don't consume them yet.
+    segments: list[dict]
 
 
 async def transcribe_audio(file_path: str) -> TranscriptionResult:
     """
-    Transcribe an audio file and return the transcript.
+    Transcribe an audio file at `file_path` and return the transcript.
 
-    TODO: implement actual API call once a provider is chosen
-    (see PROJECT_CONTEXT.md section 8/10 — not yet decided).
+    Note: the OpenAI SDK's transcription call is synchronous under the
+    hood; for an MVP with low concurrency this is fine. If upload volume
+    grows, move this to a background task/queue rather than blocking
+    the request.
     """
-    raise NotImplementedError(
-        "Wire this up to a transcription provider (e.g. OpenAI Whisper API) "
-        "using settings.transcription_api_key."
-    )
+    client = _get_client()
+
+    with open(file_path, "rb") as audio_file:
+        response = client.audio.transcriptions.create(
+            model=settings.transcription_model,
+            file=audio_file,
+            response_format="verbose_json",
+        )
+
+    # response.segments is a list of Segment objects when using
+    # verbose_json; normalize to plain dicts for easy JSON storage.
+    segments = [
+        {
+            "start": seg.start,
+            "end": seg.end,
+            "text": seg.text,
+        }
+        for seg in getattr(response, "segments", []) or []
+    ]
+
+    return TranscriptionResult(text=response.text, segments=segments)
