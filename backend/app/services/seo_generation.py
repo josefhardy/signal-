@@ -56,22 +56,36 @@ class SeoPackage:
 
 @dataclass
 class TopicExtraction:
-    topics: list[str]
+    topics: list[str]       # descriptive phrases — used for show notes context
     entities: list[str]
     key_quotes: list[str]
+    search_keywords: list[str]  # short query-style terms — fed to retrieve_trend_data()
 
 
 async def extract_topics(transcript: str) -> TopicExtraction:
-    """Pull structured topics/entities/quotes out of a raw transcript."""
+    """Pull structured topics/entities/quotes out of a raw transcript.
+
+    Returns two distinct representations of the episode's subject matter:
+    - topics: descriptive summary phrases (used in show notes generation)
+    - search_keywords: short 2-4 word phrases the way someone would type
+      into Google (used for trend lookup — these are what pytrends can
+      actually match against real search volume)
+    """
     client = _get_client()
 
     prompt = f"""Analyze this podcast episode transcript and extract:
-1. Main topics discussed (3-6 short phrases)
+1. Main topics discussed (3-6 descriptive phrases summarising what was covered)
 2. Named entities mentioned (people, companies, products, places)
 3. The 2-4 most quotable/interesting moments (verbatim short quotes)
+4. Search keywords: 4-6 short phrases (2-4 words each) that someone would
+   actually type into Google to find content like this episode. These must
+   be concise, search-query style — NOT descriptive summaries. Good examples:
+   "green lantern review", "DC show 2024", "hal jordan character". Bad
+   examples: "Comparisons with past DC shows", "Character analysis of the
+   Green Lanterns in the new series".
 
 Return ONLY valid JSON in this exact shape:
-{{"topics": [...], "entities": [...], "key_quotes": [...]}}
+{{"topics": [...], "entities": [...], "key_quotes": [...], "search_keywords": [...]}}
 
 Transcript:
 {transcript[:12000]}
@@ -88,6 +102,7 @@ Transcript:
         topics=data.get("topics", []),
         entities=data.get("entities", []),
         key_quotes=data.get("key_quotes", []),
+        search_keywords=data.get("search_keywords", []),
     )
 
 
@@ -197,7 +212,7 @@ async def generate_seo_package(transcript: str) -> SeoPackage:
     client = _get_client()
 
     extraction = await extract_topics(transcript)
-    trend_data = await retrieve_trend_data(extraction.topics)
+    trend_data = await retrieve_trend_data(extraction.search_keywords)
 
     grounding_context = f"""Topics discussed: {", ".join(extraction.topics)}
 Entities mentioned: {", ".join(extraction.entities)}
