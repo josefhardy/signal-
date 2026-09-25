@@ -47,17 +47,18 @@ export default async function EpisodePage({ params }: Props) {
       {/* Episode header */}
       <header className="mb-8">
         <h1 className="break-words text-2xl font-bold text-white">
-          {original_filename ?? id}
+          {seo_package.title_options[0] ?? original_filename ?? id}
         </h1>
-        {created_at && (
-          <p className="mt-1 text-sm text-slate-500">
-            {new Date(created_at).toLocaleDateString("en-US", {
+        <p className="mt-1 text-sm text-slate-500">
+          {original_filename}
+          {created_at && (
+            <> &middot; {new Date(created_at).toLocaleDateString("en-US", {
               year: "numeric",
               month: "long",
               day: "numeric",
-            })}
-          </p>
-        )}
+            })}</>
+          )}
+        </p>
 
         {/* Grounding badge */}
         <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-indigo-500/30 bg-indigo-900/20 px-3 py-1 text-xs font-medium text-indigo-300">

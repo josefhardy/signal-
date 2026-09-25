@@ -41,7 +41,7 @@ export default async function EpisodeList() {
           <div className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-800/40 px-5 py-4 transition-colors hover:border-slate-600 hover:bg-slate-800/60">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-slate-200">
-                {ep.original_filename ?? ep.id}
+                {ep.seo_package?.title_options?.[0] ?? ep.original_filename ?? ep.id}
               </p>
               {formatDate(ep.created_at) && (
                 <p className="mt-0.5 text-xs text-slate-500">
